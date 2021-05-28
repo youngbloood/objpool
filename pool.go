@@ -8,46 +8,68 @@ import (
 )
 
 type pool struct {
-	obj map[string]*sync.Pool
+	mux sync.RWMutex
+	obj *sync.Map
 }
 
-func New(size int) *pool {
-	if size < 0 {
-		size = 0
-	}
+var _ Pooler = (*pool)(nil)
+
+func New() *pool {
 	return &pool{
-		obj: make(map[string]*sync.Pool, size),
+		obj: &sync.Map{},
 	}
 }
 
 func (p *pool) Set(v interface{}, new func() interface{}) (objName string) {
 	rt := reflect.TypeOf(v)
 	objName = rt.String()
-	p.obj[objName] = &sync.Pool{
+	p.mux.RLock()
+	defer p.mux.RUnlock()
+	p.obj.Store(objName, &sync.Pool{
 		New: new,
-	}
+	})
 	return objName
 }
 
 func (p *pool) Put(v interface{}) {
 	rt := reflect.TypeOf(v)
-	sp := p.obj[rt.String()]
-	if sp == nil {
+	pool := p.getPool(rt.String())
+	if pool == nil {
 		return
 	}
-	sp.Put(v)
+	pool.Put(v)
 }
 
 // objName=${packageName}.${typeName}
 // eg:packageName=pool_test,typeName=Struct;objName="pool_test.Struct" or "*pool_test.Struct"
 func (p *pool) Get(objName string, isSetZero bool) interface{} {
-	sp := p.obj[objName]
-	if sp == nil {
+	pool := p.getPool(objName)
+	if pool == nil {
 		return nil
 	}
-	obj := sp.Get()
+	obj := pool.Get()
 	if isSetZero {
-		zero.Reset(obj, nil)
+		zero.Reset(obj)
 	}
 	return obj
+}
+
+func (p *pool) Reset() {
+	p.mux.Lock()
+	defer p.mux.Unlock()
+	p.obj = &sync.Map{}
+}
+
+func (p *pool) getPool(objName string) *sync.Pool {
+	p.mux.RLock()
+	defer p.mux.RUnlock()
+	pv, exist := p.obj.Load(objName)
+	if !exist {
+		return nil
+	}
+	pool, ok := pv.(*sync.Pool)
+	if !ok {
+		return nil
+	}
+	return pool
 }
